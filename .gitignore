@@ -1,0 +1,7 @@
+/dist/
+/bin/
+*.exe
+*.syso
+.DS_Store
+.idea/
+.vscode/

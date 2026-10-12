@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Собрать только для одной ОС (all = все три)"
+        type: choice
+        default: "all"
+        options: [ all, ubuntu-latest, windows-latest, macos-latest ]
+
+permissions:
+  contents: read
+
+env:
+  APP_NAME: ArduinoManager
+  GO_VERSION: "1.24"
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.os != '' && inputs.os != 'all' && format('["{0}"]', inputs.os) || '["ubuntu-latest","windows-latest","macos-latest"]') }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ libgl1-mesa-dev xorg-dev
+
+      - name: Deps (Windows)
+        if: runner.os == 'Windows'
+        run: choco install mingw --yes --no-progress
+
+      - name: Build (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w" -o dist/${{ env.APP_NAME }} .
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          go build -trimpath -ldflags "-s -w -H=windowsgui" -o dist/${{ env.APP_NAME }}.exe .
+
+      - name: Pack (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/* -DestinationPath ${{ env.APP_NAME }}-windows-amd64.zip -Force
+
+      - name: Pack (Linux)
+        if: runner.os == 'Linux'
+        run: tar -czf ${{ env.APP_NAME }}-linux-amd64.tar.gz -C dist .
+
+      - name: Pack (macOS)
+        if: runner.os == 'macOS'
+        run: zip -r ${{ env.APP_NAME }}-darwin-arm64.zip dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ matrix.os }}
+          path: |
+            ${{ env.APP_NAME }}-*.zip
+            ${{ env.APP_NAME }}-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ls -la artifacts
+          gh release create "${GITHUB_REF_NAME}" artifacts/* \
+            --title "Arduino Manager ${GITHUB_REF_NAME}" \
+            --generate-notes
